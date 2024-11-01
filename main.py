@@ -10,6 +10,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
+secret_file = open("secret.txt", "r")
+list = secret_file.readlines()
+secret_code = list[0]
+
 def clone_repository(repo_url, dest_folder, api_key=None):
     # Add the API key to the URL if provided
     if api_key:
@@ -257,7 +261,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'install':
-        temp_clone_path, username, repo_name = clone_repository(args.repo_url, args.include_folder, api_key="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")
+        temp_clone_path, username, repo_name = clone_repository(args.repo_url, args.include_folder, api_key=secret_code)
         extract_headers_and_sources(username, repo_name, temp_clone_path, args.include_folder)
         create_build_system(username, repo_name, args.include_folder)
         record_package(username, repo_name)
