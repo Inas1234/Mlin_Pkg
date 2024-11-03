@@ -15,7 +15,6 @@ list = secret_file.readlines()
 secret_code = list[0]
 
 def clone_repository(repo_url, dest_folder, api_key=None):
-    # Add the API key to the URL if provided
     if api_key:
         repo_url = repo_url.replace("https://", f"https://{api_key}@")
 
@@ -66,12 +65,6 @@ def update_include_paths(file_path, dest_folder):
     with open(file_path, 'w') as file:
         file.writelines(updated_lines)
 
-import os
-import shutil
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-
-console = Console()
 
 def extract_headers_and_sources(username, repo_name, repo_path, include_folder):
     dest_path = os.path.join(include_folder, username, repo_name)
@@ -81,8 +74,8 @@ def extract_headers_and_sources(username, repo_name, repo_path, include_folder):
     console.print(f"[bold blue]Extracting header and source files from '{repo_name}' to '{username}/{repo_name}'...[/bold blue]")
 
     exclude_keywords = ["test", "example", "demo", "unit", "custom", "mock", "sample", "temp", "tmp", 
-                        "draft", "experimental", "doc", "docs", "cmake", "build", "backup", "bak", "data"]
-    exclude_includes_keywords = ["test"] 
+                        "draft", "experimental", "doc", "docs", "cmake", "build", "bak"]
+    exclude_includes_keywords = ["test"]
 
     def should_exclude_by_include(file_path):
         """Return True if any include directive in file references excluded keywords."""
@@ -93,34 +86,43 @@ def extract_headers_and_sources(username, repo_name, repo_path, include_folder):
                         return True
         return False
 
+    header_files = []  # Track copied header files for later source file check
+
     with Progress(SpinnerColumn(), TextColumn("[bold blue]{task.description}"), console=console) as progress:
-        extract_task = progress.add_task("Copying files...", total=None)
+        # First pass: Copy header files
+        copy_task = progress.add_task("Copying header files...", total=None)
         for root, _, files in os.walk(repo_path):
-            header_files = {os.path.splitext(file)[0] for file in files if file.endswith(('.h', '.hpp'))}
-
             for file in files:
-                if not any(keyword in file.lower() for keyword in exclude_keywords):
+                if file.endswith(('.h', '.hpp')) and not any(keyword in file.lower() for keyword in exclude_keywords):
                     source_path = os.path.join(root, file)
-
                     if should_exclude_by_include(source_path):
-                        console.print(f"[yellow]Skipping '{file}' due to 'test' in include headers.[/yellow]")
+                        console.print(f"[yellow]Skipping header '{file}' due to 'test' in include headers.[/yellow]")
                         continue
+                    dest_file_path = os.path.join(dest_path, file)
+                    shutil.copy2(source_path, dest_file_path)
+                    header_files.append(file)  # Keep track of copied headers
+                    console.print(f"[green]Copied header '{file}' to '{dest_path}'.[/green]")
+        progress.remove_task(copy_task)
 
-                    if file.endswith(('.h', '.hpp', '.def', '.hxx')):
+        # Second pass: Copy source files that match the header files
+        copy_task = progress.add_task("Copying matching source files...", total=None)
+        for root, _, files in os.walk(repo_path):
+            for file in files:
+                if file.endswith(('.c', '.cpp', '.cc')):
+                    base_name = os.path.splitext(file)[0]
+                    if base_name in {os.path.splitext(h)[0] for h in header_files}:
+                        source_path = os.path.join(root, file)
                         dest_file_path = os.path.join(dest_path, file)
                         shutil.copy2(source_path, dest_file_path)
-                        update_include_paths(dest_file_path, dest_path)
-                        console.print(f"[green]Copied header '{file}' to '{dest_path}' with updated include paths.[/green]")
+                        console.print(f"[green]Copied source '{file}' to '{dest_path}' corresponding to header file '{base_name}'.[/green]")
+        progress.remove_task(copy_task)
 
-                    elif file.endswith(('.c', '.cpp', '.cc')):
-                        base_name = os.path.splitext(file)[0]
-                        if base_name in header_files:
-                            dest_file_path = os.path.join(dest_path, file)
-                            shutil.copy2(source_path, dest_file_path)
-                            update_include_paths(dest_file_path, dest_path)
-                            console.print(f"[green]Copied source '{file}' to '{dest_path}' with updated include paths.[/green]")
-                        
-        progress.remove_task(extract_task)
+    # Update include paths after all files have been copied
+    console.print("[bold blue]Updating include paths...[/bold blue]")
+    for file in os.listdir(dest_path):
+        file_path = os.path.join(dest_path, file)
+        update_include_paths(file_path, dest_path)
+    console.print(f"[green]Include paths updated for all copied files in '{dest_path}'.[/green]")
 
     console.print(f"[red]Deleting temporary cloned repository at '{repo_path}'...[/red]")
     shutil.rmtree(repo_path)
@@ -194,13 +196,11 @@ def record_package(username, repo_name):
 
 def uninstall_package(username, repo_name, include_folder):
     try:
-        # Remove from include folder
         repo_path = os.path.join(include_folder, username, repo_name)
         if os.path.exists(repo_path):
             shutil.rmtree(repo_path)
             console.print(f"[red]Removed '{username}/{repo_name}' from include folder.[/red]")
 
-        # Remove from the package record
         package_record = "packages.json"
         if os.path.exists(package_record):
             with open(package_record, 'r') as f:
@@ -244,12 +244,46 @@ def build_package(repo_name):
     finally:
         os.chdir(os.getcwd())
 
+
+def download_specific_library(library_name, dest_folder):
+    if library_name.lower() == "nlohmann":
+        url = "https://github.com/nlohmann/json"
+        temp_dest_path = os.path.join(dest_folder, f"{library_name}_temp")
+        final_dest_path = os.path.join(dest_folder, library_name)
+        
+        if not os.path.exists(final_dest_path):
+            console.print(f"[bold blue]Downloading '{library_name}' from '{url}'...[/bold blue]")
+            clone_repository(url, temp_dest_path, secret_code)
+            
+            single_include_path = os.path.join(temp_dest_path, "json", "single_include")
+            if os.path.exists(single_include_path):
+                os.makedirs(final_dest_path, exist_ok=True)
+                
+                for item in os.listdir(single_include_path):
+                    source_path = os.path.join(single_include_path, item)
+                    dest_path = os.path.join(final_dest_path, item)
+                    if os.path.isdir(source_path):
+                        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(source_path, dest_path)
+                        
+                console.print(f"[green]Copied contents from 'json/single_include' to '{final_dest_path}'.[/green]")
+            else:
+                console.print(f"[red]The path 'json/single_include' does not exist in the cloned repository.[/red]")
+            
+            shutil.rmtree(temp_dest_path)
+            console.print(f"[red]Deleted temporary cloned repository at '{temp_dest_path}'.[/red]")
+        else:
+            console.print(f"[yellow]Library '{library_name}' already exists in '{dest_folder}'.[/yellow]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="C++ Package Manager")
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     install_parser = subparsers.add_parser('install', help='Install a C++ package from a GitHub repository URL')
-    install_parser.add_argument('repo_url', type=str, help='GitHub repository URL')
+    install_parser.add_argument('library', type=str, help='Library name or GitHub URL')
+    install_parser.add_argument('-u', action='store_true', help='Flag to indicate GitHub URL')
     install_parser.add_argument('--include-folder', type=str, default='include', help='Folder to store header and source files')
 
     uninstall_parser = subparsers.add_parser('uninstall', help='Uninstall a previously installed package')
@@ -261,11 +295,16 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'install':
-        temp_clone_path, username, repo_name = clone_repository(args.repo_url, args.include_folder, api_key=secret_code)
-        extract_headers_and_sources(username, repo_name, temp_clone_path, args.include_folder)
-        create_build_system(username, repo_name, args.include_folder)
-        record_package(username, repo_name)
-        build_package(repo_name)
+        if args.u:
+            temp_clone_path, username, repo_name = clone_repository(args.library, args.include_folder, api_key=secret_code)
+            extract_headers_and_sources(username, repo_name, temp_clone_path, args.include_folder)
+            create_build_system(username, repo_name, args.include_folder)
+            record_package(username, repo_name)
+            build_package(repo_name)
+        else:
+            download_specific_library(args.library, args.include_folder)
+            record_package(args.library, args.library)
+
     elif args.command == 'uninstall':
         repo_name = args.repo_name.split('/')[-1]
         username = args.repo_name.split('/')[0]
